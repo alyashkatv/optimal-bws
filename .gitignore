@@ -1,0 +1,45 @@
+# Clinical / participant data
+raw_data/
+first_batch/
+second_batch/
+filtered_data/
+filtered_*/
+documents/patient_information_summary.csv
+
+# Raw sensor recordings
+*.insoleX
+*.c3d
+
+# Derived datasets that may contain participant data
+*.npz
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated outputs
+pressure_graphs_raw/
+pressure_graphs_filtered/
+pressure_graphs_*/
+cop_plots/
+filter_test_results/
+filter_test_individual_sensors/
+loading_analysis/
+regional_loading_analysis/
+plots_alya/
+test_ulan_alya/
+test_first_batch/
+
+# Generated plot and analysis files
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.pdf
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
