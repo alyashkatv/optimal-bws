@@ -11,11 +11,11 @@ import numpy as np
 # ============================================================
 
 INPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/filtered_data/filtered_first_batch"
+    "/home/alya/Desktop/optimal-bws/filtered_data/filtered_second_batch"
 )
 
 OUTPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/filtered_data/events_first_batch"
+    "/home/alya/Desktop/optimal-bws/filtered_data/events_second_batch"
 )
 
 SENSORS_PER_INSOLE = 64
@@ -331,22 +331,20 @@ def calculate_contact_thresholds(
 
 def build_contact_mask(
     total_pressure,
-    active_sensor_count,
     thresholds,
 ):
     """
-    Creates a whole-foot binary state:
+    Whole-foot contact detection using summed plantar pressure.
 
-        False = no contact / swing
-        True  = contact / stance
+    False = swing / unloaded
+    True  = stance / loaded
 
-    Uses hysteresis:
-        harder to enter contact than remain in contact.
+    Hysteresis:
+        - enter contact above ON threshold
+        - leave contact below OFF threshold
     """
 
-    n = len(
-        total_pressure
-    )
+    n = len(total_pressure)
 
     contact = np.zeros(
         n,
@@ -358,33 +356,18 @@ def build_contact_mask(
     for i in range(n):
 
         if not state:
-
-            # SWING -> CONTACT candidate
-            if (
-                total_pressure[i]
-                >= thresholds["on"]
-
-                and active_sensor_count[i]
-                >= MIN_ACTIVE_SENSORS_ON
-            ):
+            # Swing -> stance
+            if total_pressure[i] >= thresholds["on"]:
                 state = True
 
         else:
-
-            # CONTACT -> SWING candidate
-            if (
-                total_pressure[i]
-                <= thresholds["off"]
-
-                and active_sensor_count[i]
-                <= MIN_ACTIVE_SENSORS_OFF
-            ):
+            # Stance -> swing
+            if total_pressure[i] <= thresholds["off"]:
                 state = False
 
         contact[i] = state
 
     return contact
-
 
 # ============================================================
 # BINARY SEGMENT UTILITIES
@@ -647,13 +630,8 @@ def detect_foot_events(
     )
 
     raw_contact = build_contact_mask(
-        signals[
-            "total_pressure"
-        ],
-        signals[
-            "active_sensor_count"
-        ],
-        thresholds,
+    signals["total_pressure"],
+    thresholds,
     )
 
     clean_contact = (

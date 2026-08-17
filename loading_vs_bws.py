@@ -15,29 +15,29 @@ import matplotlib.pyplot as plt
 
 # Change this to the batch you want to analyse.
 INPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/filtered_data/filtered_second_batch"
+    "/home/alya/Desktop/optimal-bws/filtered_data/filtered_first_batch"
 )
 
 # Folder containing raw .insoleX files.
 # Used only if a filtered NPZ is not available.
 RAW_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/second_batch"
+    "/home/alya/Desktop/optimal-bws/first_batch"
 )
 
 DOCUMENTS_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/documents"
+    "/home/alya/Desktop/optimal-bws/documents" 
 )
 
 PATIENT_CSV = DOCUMENTS_FOLDER / "patient_information_summary.csv"
 
 OUTPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/loading_analysis"
+    "/home/alya/Desktop/optimal-bws/loading_analysis"
 )
 
 TRIAL_PLOTS_FOLDER = OUTPUT_FOLDER / "trial_loading"
 PATIENT_PLOTS_FOLDER = OUTPUT_FOLDER / "patient_bws_comparison"
 
-SUMMARY_CSV = OUTPUT_FOLDER / "loading_summary.csv"
+SUMMARY_CSV = OUTPUT_FOLDER / "loading_summary_first.csv"
 
 
 SENSORS_PER_INSOLE = 64

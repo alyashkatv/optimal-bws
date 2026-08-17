@@ -6,11 +6,11 @@ import matplotlib.pyplot as plt
 
 
 INPUT_FILE = Path(
-    "/home/alya/Desktop/test_insoles/first_batch/ab_25_bws.insoleX"
+    "/home/alya/Desktop/optimal-bws/first_batch/ab_25_bws.insoleX"
 )
 
 OUTPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/test_first_batch/ab_25_cleaned"
+    "/home/alya/Desktop/optimal-bws/test_first_batch/ab_25_cleaned"
 )
 
 OUTPUT_FOLDER.mkdir(

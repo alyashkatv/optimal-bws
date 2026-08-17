@@ -5,6 +5,9 @@ second_batch/
 filtered_data/
 filtered_*/
 documents/patient_information_summary.csv
+pressure_analysis/
+gait_analysis/
+optimal_bws_analysis/
 
 # Raw sensor recordings
 *.insoleX

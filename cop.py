@@ -12,15 +12,27 @@ import matplotlib.pyplot as plt
 # ============================================================
 
 INPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/filtered_data/filtered_second_batch"
+    "/home/alya/Desktop/optimal-bws/filtered_data/filtered_first_batch"
+)
+
+EVENTS_FOLDER = Path(
+    "/home/alya/Desktop/optimal-bws/filtered_data/events_first_batch"
 )
 
 OUTPUT_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/cop_plots"
+    "/home/alya/Desktop/optimal-bws/cop_plots"
+)
+
+STANCE_METRICS_CSV = (
+    OUTPUT_FOLDER / "cop_metrics_by_stance.csv"
+)
+
+TRIAL_METRICS_CSV = (
+    OUTPUT_FOLDER / "cop_metrics_by_trial.csv"
 )
 
 DOCUMENTS_FOLDER = Path(
-    "/home/alya/Desktop/test_insoles/documents"
+    "/home/alya/Desktop/optimal-bws/documents"
 )
 
 PATIENT_INFO_FILE = (
@@ -40,23 +52,157 @@ TOTAL_SENSORS = 128
 DATA_START = 72
 
 
-# ------------------------------------------------------------
-# Recording trimming
-# ------------------------------------------------------------
+def load_gait_events(event_path):
+    """
+    Load previously detected and validated gait events.
 
-START_TRIM_S = 5.0
-END_TRIM_S = 2.0
+    Returns stance intervals as event TIMES in seconds:
+        left_stances_times
+        right_stances_times
+    """
+
+    if not event_path.exists():
+        raise FileNotFoundError(
+            f"Event file not found:\n{event_path}"
+        )
+
+    with np.load(
+        event_path,
+        allow_pickle=False,
+    ) as data:
+
+        required = {
+            "left_stances_times",
+            "right_stances_times",
+            "left_ic_times",
+            "left_to_times",
+            "right_ic_times",
+            "right_to_times",
+        }
+
+        missing = required.difference(
+            data.files
+        )
+
+        if missing:
+            raise ValueError(
+                f"{event_path.name}: missing event arrays: "
+                f"{sorted(missing)}"
+            )
+
+        left_stances_times = np.asarray(
+            data["left_stances_times"],
+            dtype=float,
+        )
+
+        right_stances_times = np.asarray(
+            data["right_stances_times"],
+            dtype=float,
+        )
+
+        left_ic_times = np.asarray(
+            data["left_ic_times"],
+            dtype=float,
+        )
+
+        left_to_times = np.asarray(
+            data["left_to_times"],
+            dtype=float,
+        )
+
+        right_ic_times = np.asarray(
+            data["right_ic_times"],
+            dtype=float,
+        )
+
+        right_to_times = np.asarray(
+            data["right_to_times"],
+            dtype=float,
+        )
+
+    return {
+        "left_stances_times": left_stances_times,
+        "right_stances_times": right_stances_times,
+        "left_ic_times": left_ic_times,
+        "left_to_times": left_to_times,
+        "right_ic_times": right_ic_times,
+        "right_to_times": right_to_times,
+    }
 
 
-# ------------------------------------------------------------
-# Stance detection
-# ------------------------------------------------------------
+def stance_times_to_indices(
+    stance_times,
+    time,
+):
+    """
+    Convert Nx2 [IC_time, TO_time] stance intervals
+    into sample indices for the filtered pressure recording.
+    """
 
-MIN_STANCE_S = 0.30
-MAX_STANCE_S = 2.0
+    stance_times = np.asarray(
+        stance_times,
+        dtype=float,
+    )
 
-CONTACT_THRESHOLD_FRACTION = 0.15
+    if stance_times.size == 0:
+        return []
 
+    if (
+        stance_times.ndim != 2
+        or stance_times.shape[1] != 2
+    ):
+        raise ValueError(
+            f"Expected stance_times shape (N, 2), "
+            f"got {stance_times.shape}"
+        )
+
+    stances = []
+
+    for ic_time, to_time in stance_times:
+
+        if (
+            not np.isfinite(ic_time)
+            or not np.isfinite(to_time)
+            or to_time <= ic_time
+        ):
+            continue
+
+        start_idx = int(
+            np.searchsorted(
+                time,
+                ic_time,
+                side="left",
+            )
+        )
+
+        end_idx = int(
+            np.searchsorted(
+                time,
+                to_time,
+                side="right",
+            )
+            - 1
+        )
+
+        start_idx = max(
+            0,
+            min(start_idx, len(time) - 1),
+        )
+
+        end_idx = max(
+            0,
+            min(end_idx, len(time) - 1),
+        )
+
+        if end_idx > start_idx:
+            stances.append(
+                (
+                    start_idx,
+                    end_idx,
+                )
+            )
+
+    return stances
 
 # ------------------------------------------------------------
 # COP
@@ -593,133 +739,6 @@ def discover_trials(folder):
     return selected
 
 
-# ============================================================
-# TRIM RECORDING
-# ============================================================
-
-def trim_recording(
-    time,
-    pressure,
-    start_trim_s,
-    end_trim_s
-):
-
-    start = start_trim_s
-
-    end = (
-        time[-1]
-        - end_trim_s
-    )
-
-    mask = (
-        (time >= start)
-        & (time <= end)
-    )
-
-    if not np.any(mask):
-        raise ValueError(
-            f"Recording is too short for {start_trim_s:g} s start and "
-            f"{end_trim_s:g} s end trimming."
-        )
-
-    return (
-        time[mask],
-        pressure[mask]
-    )
-
-
-# ============================================================
-# CONTACT / STANCE DETECTION
-# ============================================================
-
-def detect_stances(
-    foot_pressure,
-    time,
-    fs
-):
-
-    # Whole-foot average pressure
-    whole_foot = np.mean(
-        foot_pressure,
-        axis=1
-    )
-
-    baseline = np.percentile(
-        whole_foot,
-        5
-    )
-
-    high = np.percentile(
-        whole_foot,
-        95
-    )
-
-    threshold = (
-        baseline
-        + CONTACT_THRESHOLD_FRACTION
-        * (high - baseline)
-    )
-
-    contact = (
-        whole_foot
-        > threshold
-    )
-
-    transitions = np.diff(
-        contact.astype(int)
-    )
-
-    starts = np.where(
-        transitions == 1
-    )[0] + 1
-
-    ends = np.where(
-        transitions == -1
-    )[0] + 1
-
-    if contact[0]:
-
-        starts = np.insert(
-            starts,
-            0,
-            0
-        )
-
-    if contact[-1]:
-
-        ends = np.append(
-            ends,
-            len(contact) - 1
-        )
-
-    stances = []
-
-    for start_idx, end_idx in zip(
-        starts,
-        ends
-    ):
-
-        duration = (
-            end_idx
-            - start_idx
-        ) / fs
-
-        if (
-            MIN_STANCE_S
-            <= duration
-            <= MAX_STANCE_S
-        ):
-            stances.append(
-                (
-                    start_idx,
-                    end_idx
-                )
-            )
-
-    return (
-        stances,
-        threshold
-    )
 
 
 # ============================================================
@@ -782,6 +801,226 @@ def compute_cop(
         cop_y
     )
 
+
+def symmetry_index(left, right):
+    """
+    Absolute symmetry index.
+
+    0% = perfect bilateral symmetry.
+    Higher values = greater asymmetry.
+    """
+
+    if (
+        not np.isfinite(left)
+        or not np.isfinite(right)
+    ):
+        return np.nan
+
+    denominator = 0.5 * (left + right)
+
+    if denominator <= 0:
+        return np.nan
+
+    return (
+        abs(left - right)
+        / denominator
+        * 100.0
+    )
+
+
+def calculate_cop_metrics_for_stance(
+    foot_pressure,
+    start_idx,
+    end_idx,
+    x_coords,
+    y_coords,
+    time,
+):
+    """
+    Calculate quantitative COP metrics for one validated stance.
+    """
+
+    stance_pressure = foot_pressure[
+        start_idx:end_idx + 1
+    ]
+
+    stance_time = time[
+        start_idx:end_idx + 1
+    ]
+
+    cop_x, cop_y = compute_cop(
+        stance_pressure,
+        x_coords,
+        y_coords,
+    )
+
+    valid = (
+        np.isfinite(cop_x)
+        & np.isfinite(cop_y)
+    )
+
+    cop_x = cop_x[valid]
+    cop_y = cop_y[valid]
+    stance_time = stance_time[valid]
+
+    if len(cop_x) < 3:
+        return None
+
+    # --------------------------------------------------------
+    # AP excursion
+    # --------------------------------------------------------
+
+    ap_excursion = (
+        np.max(cop_y)
+        - np.min(cop_y)
+    )
+
+    # --------------------------------------------------------
+    # ML excursion
+    # --------------------------------------------------------
+
+    ml_excursion = (
+        np.max(cop_x)
+        - np.min(cop_x)
+    )
+
+    # --------------------------------------------------------
+    # COP path length
+    # --------------------------------------------------------
+
+    dx = np.diff(cop_x)
+    dy = np.diff(cop_y)
+
+    segment_lengths = np.sqrt(
+        dx**2 + dy**2
+    )
+
+    path_length = np.sum(
+        segment_lengths
+    )
+
+    # --------------------------------------------------------
+    # Duration
+    # --------------------------------------------------------
+
+    duration = (
+        stance_time[-1]
+        - stance_time[0]
+    )
+
+    # --------------------------------------------------------
+    # Mean COP velocity
+    # --------------------------------------------------------
+
+    if duration > 0:
+        mean_velocity = (
+            path_length / duration
+        )
+    else:
+        mean_velocity = np.nan
+
+    # --------------------------------------------------------
+    # Path efficiency
+    #
+    # Straight-line displacement / actual path length
+    #
+    # 1.0 = perfectly straight path
+    # lower = more wandering
+    # --------------------------------------------------------
+
+    net_displacement = np.sqrt(
+        (cop_x[-1] - cop_x[0])**2
+        + (cop_y[-1] - cop_y[0])**2
+    )
+
+    if path_length > 0:
+        path_efficiency = (
+            net_displacement
+            / path_length
+        )
+    else:
+        path_efficiency = np.nan
+
+    return {
+        "ap_excursion_mm":
+            float(ap_excursion),
+
+        "ml_excursion_mm":
+            float(ml_excursion),
+
+        "cop_path_length_mm":
+            float(path_length),
+
+        "stance_duration_s":
+            float(duration),
+
+        "mean_cop_velocity_mm_s":
+            float(mean_velocity),
+
+        "path_efficiency":
+            float(path_efficiency),
+    }
+
+def calculate_foot_cop_metrics(
+    patient_id,
+    condition,
+    foot_name,
+    foot_pressure,
+    stances,
+    x_coords,
+    y_coords,
+    time,
+):
+    """
+    Calculate COP metrics for every validated stance
+    of one foot.
+    """
+
+    rows = []
+
+    for stance_number, (
+        start_idx,
+        end_idx,
+    ) in enumerate(
+        stances,
+        start=1,
+    ):
+
+        metrics = (
+            calculate_cop_metrics_for_stance(
+                foot_pressure,
+                start_idx,
+                end_idx,
+                x_coords,
+                y_coords,
+                time,
+            )
+        )
+
+        if metrics is None:
+            continue
+
+        row = {
+            "patient": patient_id,
+            "condition":
+                condition_label(condition),
+
+            "bws_percent":
+                np.nan
+                if condition == "ground"
+                else condition,
+
+            "foot": foot_name,
+
+            "stance_number":
+                stance_number,
+
+            **metrics,
+        }
+
+        rows.append(row)
+
+    return rows
 
 # ============================================================
 # PLOT ONE FOOT
@@ -892,7 +1131,7 @@ def process_trial(
     patient_id,
     condition,
     patient_sizes,
-    sensor_layouts
+    sensor_layouts,
 ):
 
     # --------------------------------------------------------
@@ -900,110 +1139,111 @@ def process_trial(
     # --------------------------------------------------------
 
     if patient_id not in patient_sizes:
-
         raise ValueError(
             f"No insole-size information found "
             f"for patient '{patient_id}'"
         )
 
-    insole_size = (
-        patient_sizes[
-            patient_id
-        ]
-    )
+    insole_size = patient_sizes[patient_id]
 
     if insole_size not in sensor_layouts:
-
         raise ValueError(
             f"No sensor layout available "
             f"for size {insole_size}"
         )
 
-    left_x, left_y = (
-    sensor_layouts[
-        insole_size
-    ]["left"]
-    )
+    left_x, left_y = sensor_layouts[insole_size]["left"]
+    right_x, right_y = sensor_layouts[insole_size]["right"]
 
-    right_x, right_y = (
-    sensor_layouts[
-        insole_size
-    ]["right"]
+    # --------------------------------------------------------
+    # Load filtered pressure recording
+    # --------------------------------------------------------
+
+    time, pressure, fs = load_recording(file_path)
+
+    print(
+        f"  Pressure source: {file_path.name}"
     )
 
     # --------------------------------------------------------
-    # Load pressure recording
+    # Load corresponding validated event file
     # --------------------------------------------------------
 
-    (
+    trial_stem = canonical_trial_stem(file_path)
+
+    event_path = (
+        EVENTS_FOLDER
+        / f"{trial_stem}_events.npz"
+    )
+
+    events = load_gait_events(event_path)
+
+    print(
+        f"  Event source: {event_path.name}"
+    )
+
+    # --------------------------------------------------------
+    # Split pressure into feet
+    # --------------------------------------------------------
+
+    left_pressure = pressure[:, :64]
+    right_pressure = pressure[:, 64:]
+
+    # --------------------------------------------------------
+    # Convert validated stance times to pressure indices
+    # --------------------------------------------------------
+
+    left_stances = stance_times_to_indices(
+        events["left_stances_times"],
         time,
-        pressure,
-        fs
-    ) = load_recording(
-        file_path
     )
 
-    print(f"  Source: {file_path.name}")
-
-    (
+    right_stances = stance_times_to_indices(
+        events["right_stances_times"],
         time,
-        pressure
-    ) = trim_recording(
-        time,
-        pressure,
-        START_TRIM_S,
-        END_TRIM_S
     )
 
     # --------------------------------------------------------
-    # Split feet
-    # --------------------------------------------------------
+# Quantitative COP metrics
+# --------------------------------------------------------
 
-    left_pressure = (
-        pressure[
-            :,
-            :64
-        ]
+    left_metric_rows = (
+        calculate_foot_cop_metrics(
+            patient_id,
+            condition,
+            "left",
+            left_pressure,
+            left_stances,
+            left_x,
+            left_y,
+            time,
+        )
     )
 
-    right_pressure = (
-        pressure[
-            :,
-            64:
-        ]
+    right_metric_rows = (
+        calculate_foot_cop_metrics(
+            patient_id,
+            condition,
+            "right",
+            right_pressure,
+            right_stances,
+            right_x,
+            right_y,
+            time,
+        )
     )
 
-    # --------------------------------------------------------
-    # Detect stance
-    # --------------------------------------------------------
-
-    (
-        left_stances,
-        left_threshold
-    ) = detect_stances(
-        left_pressure,
-        time,
-        fs
-    )
-
-    (
-        right_stances,
-        right_threshold
-    ) = detect_stances(
-        right_pressure,
-        time,
-        fs
+    stance_metric_rows = (
+        left_metric_rows
+        + right_metric_rows
     )
 
     print(
         f"{patient_id.upper()} "
         f"{condition_label(condition)} "
         f"[size {insole_size}]: "
-        f"L={len(left_stances)}, "
-        f"R={len(right_stances)}, "
-        f"thresholds "
-        f"L={left_threshold:.2f}, "
-        f"R={right_threshold:.2f} kPa"
+        f"L={len(left_stances)} validated stances, "
+        f"R={len(right_stances)} validated stances"
     )
 
     # --------------------------------------------------------
@@ -1014,25 +1254,25 @@ def process_trial(
         1,
         2,
         figsize=(10, 10),
-        constrained_layout=True
+        constrained_layout=True,
     )
 
     plot_foot_cop(
-    axes[0],
-    left_pressure,
-    left_stances,
-    left_x,
-    left_y,
-    "Left COP: green start, red end"
+        axes[0],
+        left_pressure,
+        left_stances,
+        left_x,
+        left_y,
+        "Left COP: green start, red end",
     )
 
     plot_foot_cop(
-    axes[1],
-    right_pressure,
-    right_stances,
-    right_x,
-    right_y,
-    "Right COP: green start, red end"
+        axes[1],
+        right_pressure,
+        right_stances,
+        right_x,
+        right_y,
+        "Right COP: green start, red end",
     )
 
     fig.suptitle(
@@ -1046,13 +1286,12 @@ def process_trial(
     # --------------------------------------------------------
 
     patient_folder = (
-        OUTPUT_FOLDER
-        / patient_id
+        OUTPUT_FOLDER / patient_id
     )
 
     patient_folder.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
     output_path = (
@@ -1066,10 +1305,11 @@ def process_trial(
     plt.savefig(
         output_path,
         dpi=300,
-        bbox_inches="tight"
+        bbox_inches="tight",
     )
 
     plt.close(fig)
+    return stance_metric_rows
 
 
 def condition_label(condition):
@@ -1079,50 +1319,31 @@ def condition_label(condition):
 def condition_filename(condition):
     return "ground" if condition == "ground" else f"{condition}_bws"
 
-
-# ============================================================
-# MAIN
-# ============================================================
-
 def main():
 
     OUTPUT_FOLDER.mkdir(
         parents=True,
-        exist_ok=True
+        exist_ok=True,
     )
 
-    # --------------------------------------------------------
-    # Read patient metadata
-    # --------------------------------------------------------
-
-    patient_sizes = (
-        load_patient_sizes(
-            PATIENT_INFO_FILE
-        )
+    patient_sizes = load_patient_sizes(
+        PATIENT_INFO_FILE
     )
 
-    # --------------------------------------------------------
-    # Read S and M sensor matrices
-    # --------------------------------------------------------
+    sensor_layouts = load_all_sensor_layouts()
 
-    sensor_layouts = (
-        load_all_sensor_layouts()
+    files = sorted(
+        INPUT_FOLDER.glob("*_filtered.npz")
     )
-
-    # --------------------------------------------------------
-    # Find raw/NPZ trials, preferring NPZ for matching recordings
-    # --------------------------------------------------------
-
-    files = discover_trials(INPUT_FOLDER)
 
     if not files:
-
         raise RuntimeError(
-            f"No NPZ or .insoleX recordings found in:\n"
+            f"No filtered NPZ recordings found in:\n"
             f"{INPUT_FOLDER}"
         )
 
     trials = []
+    all_stance_metrics = []
 
     for file_path in files:
 
@@ -1131,12 +1352,10 @@ def main():
         )
 
         if parsed is None:
-
             print(
                 f"Skipping unrecognized filename: "
                 f"{file_path.name}"
             )
-
             continue
 
         patient_id, condition = parsed
@@ -1145,16 +1364,17 @@ def main():
             (
                 patient_id,
                 condition,
-                file_path
+                file_path,
             )
         )
 
-    # Patient first, then numeric BWS conditions, then ground.
     trials.sort(
         key=lambda x: (
             x[0],
             isinstance(x[1], str),
-            x[1] if isinstance(x[1], int) else 0,
+            x[1]
+            if isinstance(x[1], int)
+            else 0,
         )
     )
 
@@ -1162,47 +1382,26 @@ def main():
         f"\nFound {len(trials)} trials."
     )
 
-    current_patient = None
-
     successful = 0
     failed = 0
 
     for (
         patient_id,
         condition,
-        file_path
+        file_path,
     ) in trials:
 
-        if (
-            patient_id
-            != current_patient
-        ):
-
-            print(
-                "\n===================================="
-            )
-
-            print(
-                f"Patient: "
-                f"{patient_id.upper()}"
-            )
-
-            print(
-                "===================================="
-            )
-
-            current_patient = (
-                patient_id
-            )
-
         try:
-
-            process_trial(
+            trial_stance_metrics = process_trial(
                 file_path,
                 patient_id,
                 condition,
                 patient_sizes,
-                sensor_layouts
+                sensor_layouts,
+            )
+
+            all_stance_metrics.extend(
+                trial_stance_metrics
             )
 
             successful += 1
@@ -1211,41 +1410,262 @@ def main():
 
             failed += 1
 
+
             print(
                 f"ERROR processing "
-                f"{file_path.name}: "
-                f"{e}"
+                f"{file_path.name}: {e}"
             )
 
-    # --------------------------------------------------------
-    # Summary
-    # --------------------------------------------------------
 
-    print(
-        "\n===================================="
+    if all_stance_metrics:
+
+        grouped = {}
+
+        for row in all_stance_metrics:
+
+            key = (
+                row["patient"],
+                row["condition"],
+                row["bws_percent"],
+            )
+
+            grouped.setdefault(
+                key,
+                {
+                    "left": [],
+                    "right": [],
+                }
+            )
+
+            grouped[key][
+                row["foot"]
+            ].append(row)
+
+        trial_rows = []
+
+        metric_names = [
+            "ap_excursion_mm",
+            "ml_excursion_mm",
+            "cop_path_length_mm",
+            "mean_cop_velocity_mm_s",
+            "path_efficiency",
+        ]
+
+        for (
+            patient,
+            condition,
+            bws_percent,
+        ), feet in grouped.items():
+
+            trial_row = {
+                "patient": patient,
+                "condition": condition,
+                "bws_percent":
+                    bws_percent,
+                "n_left_stances":
+                    len(feet["left"]),
+                "n_right_stances":
+                    len(feet["right"]),
+            }
+
+            for metric in metric_names:
+
+                left_values = np.asarray(
+                    [
+                        x[metric]
+                        for x in feet["left"]
+                        if np.isfinite(x[metric])
+                    ],
+                    dtype=float,
+                )
+
+                right_values = np.asarray(
+                    [
+                        x[metric]
+                        for x in feet["right"]
+                        if np.isfinite(x[metric])
+                    ],
+                    dtype=float,
+                )
+
+                left_mean = (
+                    float(np.mean(left_values))
+                    if len(left_values)
+                    else np.nan
+                )
+
+                right_mean = (
+                    float(np.mean(right_values))
+                    if len(right_values)
+                    else np.nan
+                )
+
+                left_std = (
+                    float(np.std(
+                        left_values,
+                        ddof=1,
+                    ))
+                    if len(left_values) >= 2
+                    else np.nan
+                )
+
+                right_std = (
+                    float(np.std(
+                        right_values,
+                        ddof=1,
+                    ))
+                    if len(right_values) >= 2
+                    else np.nan
+                )
+
+                trial_row[
+                    f"{metric}_left_mean"
+                ] = left_mean
+
+                trial_row[
+                    f"{metric}_right_mean"
+                ] = right_mean
+
+                trial_row[
+                    f"{metric}_left_sd"
+                ] = left_std
+
+                trial_row[
+                    f"{metric}_right_sd"
+                ] = right_std
+
+                trial_row[
+                    f"{metric}_SI_percent"
+                ] = symmetry_index(
+                    left_mean,
+                    right_mean,
+                )
+
+            trial_rows.append(
+                trial_row
+            )
+
+        update_csv(
+            TRIAL_METRICS_CSV,
+            trial_rows,
+            key_fields=[
+                "patient",
+                "condition",
+            ],
+            )
+
+       
+        print(
+            f"\nTrial-level COP metrics:\n"
+            f"{TRIAL_METRICS_CSV}"
+        )
+        print(
+            "\n===================================="
+        )
+        print("COP PROCESSING FINISHED")
+        print("====================================")
+        print(f"Successful: {successful}")
+        print(f"Failed:     {failed}")
+        print(
+            f"\nPlots saved to:\n"
+            f"{OUTPUT_FOLDER}"
+        )
+
+        # ============================================================
+    # UPDATE MASTER PER-STANCE CSV
+    # ============================================================
+
+    if all_stance_metrics:
+
+        update_csv(
+            STANCE_METRICS_CSV,
+            all_stance_metrics,
+            key_fields=[
+                "patient",
+                "condition",
+                "foot",
+                "stance_number",
+            ],
+        )
+
+        print(
+            f"\nPer-stance COP metrics:\n"
+            f"{STANCE_METRICS_CSV}"
+        )
+def update_csv(
+    path,
+    new_rows,
+    key_fields,
+):
+    """
+    Update a master CSV.
+
+    Existing rows with the same key are replaced.
+    New rows are appended.
+    """
+
+    if not new_rows:
+        return
+
+    existing_rows = []
+
+    if path.exists():
+        with open(
+            path,
+            "r",
+            newline="",
+            encoding="utf-8",
+        ) as f:
+            existing_rows = list(
+                csv.DictReader(f)
+            )
+
+    # Identify trials/stances being recalculated
+    new_keys = {
+        tuple(
+            str(row[field])
+            for field in key_fields
+        )
+        for row in new_rows
+    }
+
+    # Keep previous rows that were NOT recalculated
+    existing_rows = [
+        row
+        for row in existing_rows
+        if tuple(
+            str(row[field])
+            for field in key_fields
+        ) not in new_keys
+    ]
+
+    combined_rows = (
+        existing_rows
+        + new_rows
     )
 
-    print(
-        "COP PROCESSING FINISHED"
+    fieldnames = list(
+        new_rows[0].keys()
     )
 
-    print(
-        "===================================="
-    )
+    with open(
+        path,
+        "w",
+        newline="",
+        encoding="utf-8",
+    ) as f:
 
-    print(
-        f"Successful: {successful}"
-    )
+        writer = csv.DictWriter(
+            f,
+            fieldnames=fieldnames,
+        )
 
-    print(
-        f"Failed:     {failed}"
-    )
-
-    print(
-        f"\nPlots saved to:\n"
-        f"{OUTPUT_FOLDER}"
-    )
-
-
+        writer.writeheader()
+        writer.writerows(
+            combined_rows
+        )
+        
 if __name__ == "__main__":
     main()
+
+
