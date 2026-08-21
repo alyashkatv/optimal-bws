@@ -12,7 +12,7 @@ import numpy as np
 
 INPUT_FOLDER = Path(
     "/home/alya/Desktop/optimal-bws/filtered_data/filtered_second_batch"
-)
+)   
 
 OUTPUT_FOLDER = Path(
     "/home/alya/Desktop/optimal-bws/filtered_data/events_second_batch"

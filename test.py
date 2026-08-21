@@ -1,131 +1,235 @@
 from pathlib import Path
 
 import ezc3d
-import matplotlib.pyplot as plt
 import numpy as np
 
 
-FOLDER = Path("/home/alya/Desktop/test_insoles")
-OUTPUT_FILE = FOLDER / "insole_pressure_comparison.png"
+FILE_PATH = Path(
+    "/home/alya/Desktop/optimal-bws/raw_data/second_batch/insoles/al_0_bws.insoleX"
+)
 
 
-def load_insole_pressure(file_path):
-    """Load average left/right insole pressure from a COMETA .insoleX file."""
+def inspect_binary_header(file_path, n_bytes=128):
+    """Print the first bytes of the file for format inspection."""
 
-    c3d = ezc3d.c3d(str(file_path))
+    with open(file_path, "rb") as f:
+        data = f.read(n_bytes)
 
-    # Analog data shape:
+    print("\n" + "=" * 80)
+    print("RAW FILE HEADER")
+    print("=" * 80)
+
+    print(f"First {len(data)} bytes:")
+
+    for offset in range(0, len(data), 16):
+        chunk = data[offset:offset + 16]
+
+        hex_part = " ".join(f"{byte:02x}" for byte in chunk)
+
+        ascii_part = "".join(
+            chr(byte) if 32 <= byte <= 126 else "."
+            for byte in chunk
+        )
+
+        print(
+            f"{offset:04x}: "
+            f"{hex_part:<47} "
+            f"{ascii_part}"
+        )
+
+
+def inspect_insole_file(file_path):
+    """Inspect one COMETA .insoleX file."""
+
+    if not file_path.exists():
+        raise FileNotFoundError(
+            f"File not found: {file_path}"
+        )
+
+    print("\n" + "=" * 80)
+    print("FILE INFORMATION")
+    print("=" * 80)
+
+    print(f"File: {file_path.name}")
+    print(f"Full path: {file_path}")
+    print(f"File size: {file_path.stat().st_size} bytes")
+    print(
+        f"File size: "
+        f"{file_path.stat().st_size / 1024 / 1024:.2f} MB"
+    )
+
+    # ------------------------------------------------------------
+    # Try loading the file as C3D
+    # ------------------------------------------------------------
+    try:
+        c3d = ezc3d.c3d(str(file_path))
+
+    except Exception as e:
+        print("\n" + "=" * 80)
+        print("EZC3D LOAD FAILED")
+        print("=" * 80)
+
+        print(
+            "The file exists, but ezc3d could not interpret it "
+            "as a valid C3D file."
+        )
+
+        print(f"\nError type: {type(e).__name__}")
+        print(f"Error message: {e}")
+
+        inspect_binary_header(file_path)
+
+        return None
+
+    # ------------------------------------------------------------
+    # Analog data
+    # ------------------------------------------------------------
+    analogs_raw = c3d["data"]["analogs"]
+
+    print("\n" + "=" * 80)
+    print("ANALOG DATA")
+    print("=" * 80)
+
+    print(f"Raw analog shape: {analogs_raw.shape}")
+
+    # Convert:
     # (subframes, channels, frames)
-    analogs = c3d["data"]["analogs"]
+    #
+    # into:
+    # (channels, samples)
+    analogs = analogs_raw.transpose(1, 0, 2).reshape(
+        analogs_raw.shape[1],
+        -1,
+    )
 
-    # Flatten time dimension
-    analogs = analogs.transpose(1, 0, 2).reshape(analogs.shape[1], -1)
+    print(f"Flattened analog shape: {analogs.shape}")
+    print(f"Number of channels: {analogs.shape[0]}")
+    print(f"Number of samples: {analogs.shape[1]}")
+
+    # ------------------------------------------------------------
+    # Analog parameters
+    # ------------------------------------------------------------
+    analog_parameters = c3d["parameters"]["ANALOG"]
 
     labels = [
-        label.strip()
-        for label in c3d["parameters"]["ANALOG"]["LABELS"]["value"]
+        str(label).strip()
+        for label in analog_parameters["LABELS"]["value"]
     ]
 
     sample_rate = float(
-        c3d["parameters"]["ANALOG"]["RATE"]["value"][0]
+        analog_parameters["RATE"]["value"][0]
     )
 
-    time = np.arange(analogs.shape[1]) / sample_rate
+    units = []
 
-    print(f"\nFile: {file_path.name}")
+    if "UNITS" in analog_parameters:
+        units = [
+            str(unit).strip()
+            for unit in analog_parameters["UNITS"]["value"]
+        ]
+
+    duration = analogs.shape[1] / sample_rate
+
+    time = np.arange(
+        analogs.shape[1],
+        dtype=float,
+    ) / sample_rate
+
     print(f"Sampling rate: {sample_rate} Hz")
-    print("Available channels:")
+    print(f"Duration: {duration:.3f} s")
+
+    # ------------------------------------------------------------
+    # Print all channels
+    # ------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("CHANNELS")
+    print("=" * 80)
 
     for i, label in enumerate(labels):
-        print(f"{i:3d}: {label}")
 
-    # Try to identify whole-foot average pressure channels
-    left_idx = None
-    right_idx = None
+        unit = units[i] if i < len(units) else ""
 
-    for i, label in enumerate(labels):
-        label_lower = label.lower()
+        if i >= analogs.shape[0]:
+            print(
+                f"{i:3d}: {label} "
+                f"[WARNING: no corresponding analog signal]"
+            )
+            continue
 
-        if (
-            "left" in label_lower
-            and "insole" in label_lower
-            and "average" in label_lower
-        ):
-            left_idx = i
+        signal = analogs[i]
 
-        if (
-            "right" in label_lower
-            and "insole" in label_lower
-            and "average" in label_lower
-        ):
-            right_idx = i
-
-    pressures = {}
-
-    if left_idx is not None:
-        pressures["Left"] = analogs[left_idx]
-
-    if right_idx is not None:
-        pressures["Right"] = analogs[right_idx]
-
-    if not pressures:
-        raise RuntimeError(
-            f"Could not find average insole pressure channels in {file_path.name}"
+        print(
+            f"{i:3d}: "
+            f"{label}"
+            f"{f' [{unit}]' if unit else ''}"
         )
 
-    return time, pressures
+        print(
+            f"     min={np.min(signal):.6f}, "
+            f"max={np.max(signal):.6f}, "
+            f"mean={np.mean(signal):.6f}, "
+            f"std={np.std(signal):.6f}"
+        )
+
+    # ------------------------------------------------------------
+    # Print parameter groups
+    # ------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("AVAILABLE C3D PARAMETER GROUPS")
+    print("=" * 80)
+
+    for group_name in c3d["parameters"]:
+        print(group_name)
+
+    # ------------------------------------------------------------
+    # Print C3D header
+    # ------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("C3D HEADER")
+    print("=" * 80)
+
+    for section_name, section in c3d["header"].items():
+
+        print(f"\n[{section_name}]")
+
+        if isinstance(section, dict):
+            for key, value in section.items():
+                print(f"{key}: {value}")
+        else:
+            print(section)
+
+    # ------------------------------------------------------------
+    # Return useful data
+    # ------------------------------------------------------------
+    return {
+        "c3d": c3d,
+        "file_path": file_path,
+        "labels": labels,
+        "units": units,
+        "sample_rate": sample_rate,
+        "duration": duration,
+        "time": time,
+        "analogs": analogs,
+    }
 
 
 def main():
-    files = sorted(FOLDER.glob("*.insoleX"))
 
-    if len(files) != 2:
-        raise RuntimeError(
-            f"Expected exactly 2 .insoleX files in {FOLDER}, "
-            f"but found {len(files)}:\n"
-            + "\n".join(str(f.name) for f in files)
-        )
+    data = inspect_insole_file(FILE_PATH)
 
-    print("Files found:")
-    for file in files:
-        print(" ", file.name)
+    if data is None:
+        print("\nInspection stopped because ezc3d could not read the file.")
+        return
 
-    fig, axes = plt.subplots(
-        2,
-        1,
-        figsize=(14, 8),
-        sharex=False,
-        constrained_layout=True,
-    )
+    print("\n" + "=" * 80)
+    print("DONE")
+    print("=" * 80)
 
-    for ax, file_path in zip(axes, files):
-        time, pressures = load_insole_pressure(file_path)
-
-        for side, pressure in pressures.items():
-            ax.plot(
-                time,
-                pressure,
-                label=f"{side} insole",
-                linewidth=1.0,
-            )
-
-        ax.set_title(file_path.name)
-        ax.set_xlabel("Time (s)")
-        ax.set_ylabel("Pressure (kPa)")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-
-    fig.suptitle("Insole Pressure vs Time", fontsize=14)
-
-    plt.savefig(
-        OUTPUT_FILE,
-        dpi=300,
-        bbox_inches="tight",
-    )
-
-    print(f"\nGraph saved to:\n{OUTPUT_FILE}")
-
-    plt.show()
+    print(f"Loaded: {data['file_path'].name}")
+    print(f"Channels: {len(data['labels'])}")
+    print(f"Samples: {data['analogs'].shape[1]}")
+    print(f"Sampling rate: {data['sample_rate']} Hz")
+    print(f"Duration: {data['duration']:.3f} s")
 
 
 if __name__ == "__main__":
